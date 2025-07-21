@@ -6,81 +6,98 @@ const {
 const qrcode = require("qrcode-terminal");
 const mysql = require("mysql2/promise");
 
-// Cek apakah dalam rentang jam 06:00 - 01:00
-function isWaktuAktif() {
-  const now = new Date();
-  const jam = now.getHours();
-  return jam >= 6 && jam < 24; // aktif dari jam 6 sampai sebelum jam 1 pagi
+// === Error Handler Global ===
+process.on("uncaughtException", (err) => {
+  console.error("🔥 Uncaught Exception:", err);
+});
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("🔥 Unhandled Rejection:", reason);
+});
+
+// === Waktu Indonesia (WIB) ===
+function getJamIndonesia() {
+  const formatter = new Intl.DateTimeFormat("id-ID", {
+    timeZone: "Asia/Jakarta",
+    hour: "numeric",
+    hour12: false,
+  });
+  return parseInt(formatter.format(new Date()));
 }
 
-// Simpan referensi ke socket
+function isWaktuAktif() {
+  const jam = getJamIndonesia();
+  return jam >= 6 || jam < 1; // Aktif dari jam 06:00 - 00:59 WIB
+}
+
+// === Socket WhatsApp ===
 let sock = null;
 
 async function connectToWhatsApp() {
-  if (!isWaktuAktif()) {
-    console.log("⏰ Di luar jam operasional. Akan mencoba lagi nanti.");
-    setTimeout(connectToWhatsApp, 10 * 60 * 1000); // Coba lagi 10 menit kemudian
-    return;
-  }
-
-  const { state, saveCreds } = await useMultiFileAuthState("auth_info_baileys");
-
-  sock = makeWASocket({
-    auth: state,
-    printQRInTerminal: false,
-  });
-
-  sock.ev.on("creds.update", saveCreds);
-
-  sock.ev.on("connection.update", (update) => {
-    const { connection, lastDisconnect, qr } = update;
-
-    if (qr) {
-      console.log("📲 Scan QR ini untuk login WhatsApp:");
-      qrcode.generate(qr, { small: true });
+  try {
+    if (!isWaktuAktif()) {
+      console.log("⏰ Di luar jam operasional. Menunggu waktu aktif...");
+      return;
     }
 
-    if (connection === "open") {
-      console.log("✅ Terhubung ke WhatsApp");
+    const { state, saveCreds } = await useMultiFileAuthState("auth_info_baileys");
 
-      // Kirim pesan hanya jika dalam waktu aktif
-      if (isWaktuAktif()) {
+    sock = makeWASocket({
+      auth: state,
+      printQRInTerminal: false,
+    });
+
+    sock.ev.on("creds.update", saveCreds);
+
+    sock.ev.on("connection.update", (update) => {
+      const { connection, lastDisconnect, qr } = update;
+
+      if (qr) {
+        console.log("📲 Scan QR untuk login WhatsApp:");
+        qrcode.generate(qr, { small: true });
+      }
+
+      if (connection === "open") {
+        console.log("✅ Terhubung ke WhatsApp");
         kirimPesanDariDatabase(sock);
+
         setInterval(() => {
           if (isWaktuAktif()) {
             kirimPesanDariDatabase(sock);
           } else {
-            console.log("⏳ Di luar jam aktif. Tidak mengirim pesan.");
+            console.log("⏳ Di luar jam aktif. Tidak kirim pesan.");
           }
         }, 60000);
       }
-    }
 
-    if (connection === "close") {
-      const statusCode = lastDisconnect?.error?.output?.statusCode;
-      const reason = DisconnectReason[statusCode] || "Unknown reason";
-      console.log(`❌ Koneksi tertutup. Alasan: ${reason}`);
+      if (connection === "close") {
+        const code = lastDisconnect?.error?.output?.statusCode;
+        const reason = DisconnectReason[code] || "Unknown reason";
+        console.log(`❌ Koneksi tertutup. Alasan: ${reason}`);
 
-      if (statusCode !== DisconnectReason.loggedOut) {
-        console.log("🔁 Mencoba reconnect...");
-        setTimeout(connectToWhatsApp, 5000);
-      } else {
-        console.log("⚠️ Telah logout dari perangkat, silakan scan ulang QR");
+        if (code !== DisconnectReason.loggedOut) {
+          console.log("🔁 Mencoba reconnect...");
+          setTimeout(connectToWhatsApp, 5000);
+        } else {
+          console.log("⚠️ Telah logout. Scan ulang QR jika perlu.");
+        }
       }
-    }
-  });
+    });
+  } catch (err) {
+    console.error("❌ Gagal konek WhatsApp:", err.message);
+  }
 }
 
+// === Kirim Pesan Otomatis ===
 async function kirimPesanDariDatabase(sock) {
   try {
-    const connection = await mysql.createConnection({
+    const db = await mysql.createConnection({
       host: "localhost",
       user: "root",
       password: "",
       database: "db_whatsapp",
     });
 
-    const [rows] = await connection.execute(
+    const [rows] = await db.execute(
       "SELECT nomor, pesan FROM pesan_otomatis WHERE status = 0"
     );
 
@@ -89,8 +106,7 @@ async function kirimPesanDariDatabase(sock) {
       try {
         await sock.sendMessage(nomor, { text: row.pesan });
         console.log(`📤 Pesan terkirim ke ${row.nomor}`);
-
-        await connection.execute(
+        await db.execute(
           "UPDATE pesan_otomatis SET status = 1 WHERE nomor = ?",
           [row.nomor]
         );
@@ -99,29 +115,32 @@ async function kirimPesanDariDatabase(sock) {
       }
     }
 
-    await connection.end();
+    await db.end();
   } catch (err) {
     console.error("❌ Gagal koneksi ke database:", err.message);
   }
 }
 
-// Jalankan saat startup
+// === Reconnect Otomatis Setiap 2 Menit ===
+let reconnectTimer = null;
+function startReconnectLoop() {
+  if (reconnectTimer) return;
+  reconnectTimer = setInterval(() => {
+    const jam = getJamIndonesia();
+
+    if (isWaktuAktif() && (!sock || sock?.ws?.readyState !== 1)) {
+      console.log(`🔁 [${jam}:00 WIB] Mencoba reconnect...`);
+      connectToWhatsApp();
+    }
+
+    if (!isWaktuAktif() && sock) {
+      console.log(`🌙 [${jam}:00 WIB] Di luar jam aktif, memutus koneksi...`);
+      sock.end();
+      sock = null;
+    }
+  }, 2 * 60 * 1000); // tiap 2 menit
+}
+
+// === Mulai Program ===
 connectToWhatsApp();
-
-// Cek dan restart koneksi setiap 10 menit jika waktu sudah masuk jam aktif
-setInterval(() => {
-  const now = new Date();
-  const jam = now.getHours();
-  const menit = now.getMinutes();
-
-  if (isWaktuAktif() && !sock) {
-    console.log("🔔 Jam aktif terdeteksi. Menyambungkan ulang...");
-    connectToWhatsApp();
-  }
-
-  if (!isWaktuAktif() && sock) {
-    console.log("🌙 Di luar jam aktif. Memutus koneksi WhatsApp...");
-    sock.end();
-    sock = null;
-  }
-}, 10 * 60 * 1000); // Setiap 10 menit
+startReconnectLoop();
