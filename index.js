@@ -39,7 +39,7 @@ async function connectToWhatsApp() {
       console.log(`Koneksi tertutup. Alasan: ${reason}`);
 
       if (statusCode !== DisconnectReason.loggedOut) {
-        console.log("🔁 Mencoba reconnect...");
+        console.log("Mencoba reconnect...");
         connectToWhatsApp();
       } else {
         console.log("Telah logout dari perangkat, silakan scan ulang QR");
@@ -66,7 +66,7 @@ async function kirimPesanDariDatabase(sock) {
       const nomor = row.nomor + "@s.whatsapp.net";
       try {
         await sock.sendMessage(nomor, { text: row.pesan });
-        console.log(`✅ Pesan terkirim ke ${row.nomor}`);
+        console.log(`Pesan terkirim ke ${row.nomor}`);
 
         await connection.execute(
           "UPDATE pesan_otomatis SET status = 1 WHERE nomor = ?",
