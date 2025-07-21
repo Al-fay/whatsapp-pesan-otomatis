@@ -26,7 +26,7 @@ async function connectToWhatsApp() {
     }
 
     if (connection === "open") {
-      console.log("✅ Terhubung ke WhatsApp");
+      console.log("Terhubung ke WhatsApp");
       kirimPesanDariDatabase(sock);
       setInterval(() => {
         kirimPesanDariDatabase(sock);
@@ -36,13 +36,13 @@ async function connectToWhatsApp() {
     if (connection === "close") {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const reason = DisconnectReason[statusCode] || "Unknown reason";
-      console.log(`❌ Koneksi tertutup. Alasan: ${reason}`);
+      console.log(`Koneksi tertutup. Alasan: ${reason}`);
 
       if (statusCode !== DisconnectReason.loggedOut) {
         console.log("🔁 Mencoba reconnect...");
         connectToWhatsApp();
       } else {
-        console.log("🚫 Telah logout dari perangkat, silakan scan ulang QR");
+        console.log("Telah logout dari perangkat, silakan scan ulang QR");
       }
     }
   });
@@ -73,13 +73,13 @@ async function kirimPesanDariDatabase(sock) {
           [row.nomor]
         );
       } catch (err) {
-        console.error(`❌ Gagal kirim ke ${row.nomor}:`, err.message);
+        console.error(`Gagal kirim ke ${row.nomor}:`, err.message);
       }
     }
 
     await connection.end();
   } catch (err) {
-    console.error("❌ Gagal koneksi ke database:", err.message);
+    console.error("Gagal koneksi ke database:", err.message);
   }
 }
 
